@@ -4,7 +4,7 @@ use rand::Rng;
 
 use crate::engine::bot::Bot;
 use crate::engine::eval::evaluate;
-use crate::engine::rollout::random_rollout;
+use crate::engine::rollout::{RolloutPolicyKind, rollout};
 use crate::{GameState, Move, Observation};
 
 #[derive(Debug, Clone)]
@@ -12,6 +12,7 @@ pub struct SearchConfig {
     pub iterations: usize,
     pub max_depth: usize,
     pub exploration: f64,
+    pub rollout_policy: RolloutPolicyKind,
 }
 
 impl Default for SearchConfig {
@@ -20,6 +21,7 @@ impl Default for SearchConfig {
             iterations: 1_000,
             max_depth: 80,
             exploration: 1.4,
+            rollout_policy: RolloutPolicyKind::Random,
         }
     }
 }
@@ -108,7 +110,13 @@ impl IsmctsBot {
 
         let reward = if tree.was_expanded_this_iteration(&key, &mv) {
             let remaining_depth = self.config.max_depth.saturating_sub(depth + 1);
-            random_rollout(state, root_player, remaining_depth, rng)
+            rollout(
+                state,
+                root_player,
+                remaining_depth,
+                self.config.rollout_policy,
+                rng,
+            )
         } else {
             self.simulate(tree, state, root_player, depth + 1, rng)
         };
@@ -243,6 +251,7 @@ mod tests {
             iterations: 1,
             max_depth: 12,
             exploration: 1.4,
+            rollout_policy: RolloutPolicyKind::Random,
         });
         let mut tree = SearchTree::default();
         let mut rng = StdRng::seed_from_u64(9);

@@ -1,7 +1,7 @@
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use crate::engine::{Bot, IsmctsBot, RandomBot, SearchConfig};
+use crate::engine::{Bot, IsmctsBot, RandomBot, RolloutPolicyKind, SearchConfig};
 use crate::{GameState, Move, PlayerId};
 
 #[derive(Debug, Clone)]
@@ -10,6 +10,7 @@ pub struct BenchmarkConfig {
     pub player_count: usize,
     pub ismcts_iterations: usize,
     pub max_depth: usize,
+    pub rollout_policy: RolloutPolicyKind,
     pub max_decisions_per_game: usize,
     pub seed: u64,
 }
@@ -21,6 +22,7 @@ impl Default for BenchmarkConfig {
             player_count: 3,
             ismcts_iterations: 100,
             max_depth: 80,
+            rollout_policy: RolloutPolicyKind::Random,
             max_decisions_per_game: 500,
             seed: 1,
         }
@@ -74,6 +76,7 @@ fn play_ismcts_vs_random_game(config: &BenchmarkConfig, game_offset: u64) -> Opt
         iterations: config.ismcts_iterations,
         max_depth: config.max_depth,
         exploration: 1.4,
+        rollout_policy: config.rollout_policy,
     });
     let mut random = RandomBot;
 
@@ -117,6 +120,7 @@ mod tests {
             player_count: 3,
             ismcts_iterations: 5,
             max_depth: 20,
+            rollout_policy: RolloutPolicyKind::Random,
             max_decisions_per_game: 300,
             seed: 7,
         });
@@ -137,12 +141,38 @@ mod tests {
                 player_count: 3,
                 ismcts_iterations: iterations,
                 max_depth: 80,
+                rollout_policy: RolloutPolicyKind::Random,
                 max_decisions_per_game: 500,
                 seed: 11,
             });
 
             println!(
                 "iterations={iterations:>3} games={} ismcts_wins={} random_wins={} timeouts={} win_rate={:.2}",
+                result.games,
+                result.ismcts_wins,
+                result.random_wins,
+                result.draws_or_timeouts,
+                result.ismcts_win_rate(),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with `cargo test rollout_policy_benchmark -- --ignored --nocapture`"]
+    fn rollout_policy_benchmark() {
+        for rollout_policy in [RolloutPolicyKind::Random, RolloutPolicyKind::Heuristic] {
+            let result = benchmark_ismcts_vs_random(BenchmarkConfig {
+                games: 250,
+                player_count: 3,
+                ismcts_iterations: 100,
+                max_depth: 80,
+                rollout_policy,
+                max_decisions_per_game: 500,
+                seed: 17,
+            });
+
+            println!(
+                "rollout={rollout_policy:?} games={} ismcts_wins={} random_wins={} timeouts={} win_rate={:.2}",
                 result.games,
                 result.ismcts_wins,
                 result.random_wins,

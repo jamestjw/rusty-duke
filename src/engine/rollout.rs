@@ -2,12 +2,68 @@ use rand::Rng;
 use rand::seq::SliceRandom;
 
 use crate::engine::eval::evaluate;
-use crate::{GameState, PlayerId};
+use crate::{ActionKind, Card, GameState, Move, Phase, PlayerId};
 
-pub fn random_rollout<R: Rng + ?Sized>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RolloutPolicyKind {
+    Random,
+    Heuristic,
+}
+
+impl Default for RolloutPolicyKind {
+    fn default() -> Self {
+        Self::Random
+    }
+}
+
+pub trait RolloutPolicy {
+    fn choose_move<R: Rng + ?Sized>(
+        &self,
+        state: &GameState,
+        player: PlayerId,
+        legal: &[Move],
+        rng: &mut R,
+    ) -> Option<Move>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RandomRolloutPolicy;
+
+impl RolloutPolicy for RandomRolloutPolicy {
+    fn choose_move<R: Rng + ?Sized>(
+        &self,
+        _state: &GameState,
+        _player: PlayerId,
+        legal: &[Move],
+        rng: &mut R,
+    ) -> Option<Move> {
+        legal.choose(rng).cloned()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeuristicRolloutPolicy;
+
+impl RolloutPolicy for HeuristicRolloutPolicy {
+    fn choose_move<R: Rng + ?Sized>(
+        &self,
+        state: &GameState,
+        player: PlayerId,
+        legal: &[Move],
+        rng: &mut R,
+    ) -> Option<Move> {
+        legal
+            .iter()
+            .max_by_key(|mv| score_move(state, player, mv, rng))
+            .cloned()
+    }
+}
+
+pub fn rollout<R: Rng + ?Sized>(
     state: &mut GameState,
     root_player: PlayerId,
     max_depth: usize,
+    policy: RolloutPolicyKind,
     rng: &mut R,
 ) -> f64 {
     for _ in 0..max_depth {
@@ -19,7 +75,15 @@ pub fn random_rollout<R: Rng + ?Sized>(
             break;
         };
         let legal = state.legal_moves(player);
-        let Some(mv) = legal.choose(rng).cloned() else {
+        let mv = match policy {
+            RolloutPolicyKind::Random => {
+                RandomRolloutPolicy.choose_move(state, player, &legal, rng)
+            }
+            RolloutPolicyKind::Heuristic => {
+                HeuristicRolloutPolicy.choose_move(state, player, &legal, rng)
+            }
+        };
+        let Some(mv) = mv else {
             break;
         };
 
@@ -29,4 +93,159 @@ pub fn random_rollout<R: Rng + ?Sized>(
     }
 
     evaluate(state, root_player)
+}
+
+fn score_move<R: Rng + ?Sized>(state: &GameState, player: PlayerId, mv: &Move, rng: &mut R) -> i32 {
+    let jitter = rng.gen_range(0..4);
+    score_move_base(state, player, mv) + jitter
+}
+
+fn score_move_base(state: &GameState, player: PlayerId, mv: &Move) -> i32 {
+    match mv {
+        Move::Income => 20,
+        Move::ForeignAid => 28,
+        Move::Tax => 45,
+        Move::Exchange => 32,
+        Move::Coup { target } => 80 + target_score(state, *target),
+        Move::Assassinate { target } => 55 + target_score(state, *target),
+        Move::Steal { target } => 35 + state.players[*target].coins.min(2) as i32 * 8,
+        Move::Challenge => challenge_score(state, player),
+        Move::PassChallenge => 25,
+        Move::Block { claim } => block_score(state, player, *claim),
+        Move::PassBlock => 18,
+        Move::RevealInfluence { card_index } => reveal_score(state, player, *card_index),
+        Move::ExchangeReturn { keep } => exchange_return_score(keep),
+    }
+}
+
+fn target_score(state: &GameState, target: PlayerId) -> i32 {
+    let target_state = &state.players[target];
+    let influence_bonus = if target_state.hidden_count() == 1 {
+        30
+    } else {
+        10
+    };
+    influence_bonus + target_state.coins as i32
+}
+
+fn challenge_score(state: &GameState, player: PlayerId) -> i32 {
+    match &state.phase {
+        Phase::AwaitingChallenge { action, .. } => action
+            .kind
+            .claim()
+            .map(|claim| claim_challenge_score(state, player, claim, action.kind))
+            .unwrap_or(0),
+        Phase::AwaitingBlockChallenge { block_card, .. } => {
+            claim_challenge_score(state, player, *block_card, ActionKind::ForeignAid)
+        }
+        _ => 0,
+    }
+}
+
+fn claim_challenge_score(
+    state: &GameState,
+    player: PlayerId,
+    claim: Card,
+    action: ActionKind,
+) -> i32 {
+    if visible_card_count(state, player, claim) >= 3 {
+        return 100;
+    }
+
+    let impact = match action {
+        ActionKind::Assassinate { .. } => 25,
+        ActionKind::Steal { .. } => 15,
+        ActionKind::Tax => 10,
+        ActionKind::Exchange => 6,
+        ActionKind::ForeignAid => 4,
+    };
+    let risk_penalty = if state.players[player].hidden_count() == 1 {
+        20
+    } else {
+        0
+    };
+
+    12 + impact - risk_penalty
+}
+
+fn block_score(state: &GameState, player: PlayerId, claim: Card) -> i32 {
+    let has_claim = state.players[player]
+        .influence
+        .iter()
+        .any(|influence| !influence.revealed && influence.card == claim);
+    let truth_bonus = if has_claim { 30 } else { 0 };
+    let impact = match state.phase {
+        Phase::AwaitingBlock { action, .. } => match action.kind {
+            ActionKind::Assassinate { .. } => 45,
+            ActionKind::Steal { .. } => 30,
+            ActionKind::ForeignAid => 12,
+            ActionKind::Tax | ActionKind::Exchange => 0,
+        },
+        _ => 0,
+    };
+
+    15 + truth_bonus + impact
+}
+
+fn reveal_score(state: &GameState, player: PlayerId, card_index: usize) -> i32 {
+    let Some(influence) = state.players[player].influence.get(card_index) else {
+        return i32::MIN;
+    };
+    if influence.revealed {
+        return i32::MIN;
+    }
+
+    -card_value(influence.card)
+}
+
+fn exchange_return_score(keep: &[Card]) -> i32 {
+    keep.iter().copied().map(card_value).sum()
+}
+
+fn card_value(card: Card) -> i32 {
+    match card {
+        Card::Duke => 30,
+        Card::Captain => 24,
+        Card::Assassin => 22,
+        Card::Ambassador => 18,
+        Card::Contessa => 16,
+    }
+}
+
+fn visible_card_count(state: &GameState, player: PlayerId, card: Card) -> usize {
+    let own_hidden = state.players[player]
+        .influence
+        .iter()
+        .filter(|influence| !influence.revealed && influence.card == card)
+        .count();
+    let revealed = state
+        .players
+        .iter()
+        .flat_map(|player| player.influence.iter())
+        .filter(|influence| influence.revealed && influence.card == card)
+        .count();
+
+    own_hidden + revealed
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    use super::*;
+
+    #[test]
+    fn heuristic_policy_only_returns_legal_moves() {
+        let game = GameState::new(3, 1).unwrap();
+        let player = game.active_player().unwrap();
+        let legal = game.legal_moves(player);
+        let mut rng = StdRng::seed_from_u64(3);
+
+        let mv = HeuristicRolloutPolicy
+            .choose_move(&game, player, &legal, &mut rng)
+            .unwrap();
+
+        assert!(legal.contains(&mv));
+    }
 }

@@ -1319,6 +1319,7 @@ mod tests {
             iterations: 25,
             max_depth: 20,
             exploration: 1.4,
+            rollout_policy: crate::engine::RolloutPolicyKind::Random,
         });
         let mut rng = StdRng::seed_from_u64(7);
 
@@ -1335,6 +1336,7 @@ mod tests {
             iterations: 25,
             max_depth: 20,
             exploration: 1.4,
+            rollout_policy: crate::engine::RolloutPolicyKind::Random,
         };
         let mut first_bot = crate::engine::IsmctsBot::new(config.clone());
         let mut second_bot = crate::engine::IsmctsBot::new(config);
