@@ -99,14 +99,7 @@ pub fn rollout<R: Rng + ?Sized>(
             break;
         };
         let legal = state.legal_moves(player);
-        let mv = match policy {
-            RolloutPolicyKind::Random => {
-                RandomRolloutPolicy.choose_move(state, player, &legal, rng)
-            }
-            RolloutPolicyKind::Heuristic(profile) => {
-                HeuristicRolloutPolicy::new(profile).choose_move(state, player, &legal, rng)
-            }
-        };
+        let mv = choose_rollout_move(state, player, &legal, policy, rng);
         let Some(mv) = mv else {
             break;
         };
@@ -117,6 +110,21 @@ pub fn rollout<R: Rng + ?Sized>(
     }
 
     evaluate(state, root_player)
+}
+
+pub fn choose_rollout_move<R: Rng + ?Sized>(
+    state: &GameState,
+    player: PlayerId,
+    legal: &[Move],
+    policy: RolloutPolicyKind,
+    rng: &mut R,
+) -> Option<Move> {
+    match policy {
+        RolloutPolicyKind::Random => RandomRolloutPolicy.choose_move(state, player, legal, rng),
+        RolloutPolicyKind::Heuristic(profile) => {
+            HeuristicRolloutPolicy::new(profile).choose_move(state, player, legal, rng)
+        }
+    }
 }
 
 fn score_move<R: Rng + ?Sized>(
@@ -139,12 +147,20 @@ fn score_move_base(
     match mv {
         Move::Income => 20 + profile.income_bonus(),
         Move::ForeignAid => 28 + profile.economy_bonus(),
-        Move::Tax => 45 + profile.economy_bonus(),
-        Move::Exchange => 32 + profile.exchange_bonus(),
+        Move::Tax => 45 + profile.economy_bonus() + claim_truth_score(state, player, Card::Duke),
+        Move::Exchange => {
+            32 + profile.exchange_bonus() + claim_truth_score(state, player, Card::Ambassador)
+        }
         Move::Coup { target } => 80 + target_score(state, *target) + profile.attack_bonus(),
-        Move::Assassinate { target } => 55 + target_score(state, *target) + profile.attack_bonus(),
+        Move::Assassinate { target } => {
+            55 + target_score(state, *target)
+                + profile.attack_bonus()
+                + claim_truth_score(state, player, Card::Assassin)
+        }
         Move::Steal { target } => {
-            35 + state.players[*target].coins.min(2) as i32 * 8 + profile.attack_bonus() / 2
+            35 + state.players[*target].coins.min(2) as i32 * 8
+                + profile.attack_bonus() / 2
+                + claim_truth_score(state, player, Card::Captain)
         }
         Move::Challenge => challenge_score(state, player, profile),
         Move::PassChallenge => 25,
@@ -219,6 +235,14 @@ fn target_score(state: &GameState, target: PlayerId) -> i32 {
     influence_bonus + target_state.coins as i32
 }
 
+fn claim_truth_score(state: &GameState, player: PlayerId, claim: Card) -> i32 {
+    if has_hidden_card(state, player, claim) {
+        18
+    } else {
+        -18
+    }
+}
+
 fn challenge_score(state: &GameState, player: PlayerId, profile: HeuristicProfile) -> i32 {
     match &state.phase {
         Phase::AwaitingChallenge { action, .. } => action
@@ -261,11 +285,7 @@ fn claim_challenge_score(
 }
 
 fn block_score(state: &GameState, player: PlayerId, claim: Card, profile: HeuristicProfile) -> i32 {
-    let has_claim = state.players[player]
-        .influence
-        .iter()
-        .any(|influence| !influence.revealed && influence.card == claim);
-    let truth_bonus = if has_claim { 30 } else { 0 };
+    let has_claim = has_hidden_card(state, player, claim);
     let impact = match state.phase {
         Phase::AwaitingBlock { action, .. } => match action.kind {
             ActionKind::Assassinate { .. } => 45,
@@ -276,7 +296,11 @@ fn block_score(state: &GameState, player: PlayerId, claim: Card, profile: Heuris
         _ => 0,
     };
 
-    15 + truth_bonus + impact + profile.block_bonus()
+    if has_claim {
+        25 + impact + profile.block_bonus()
+    } else {
+        impact / 3 + profile.block_bonus() / 2
+    }
 }
 
 fn reveal_score(state: &GameState, player: PlayerId, card_index: usize) -> i32 {
@@ -320,12 +344,38 @@ fn visible_card_count(state: &GameState, player: PlayerId, card: Card) -> usize 
     own_hidden + revealed
 }
 
+fn has_hidden_card(state: &GameState, player: PlayerId, card: Card) -> bool {
+    state.players[player]
+        .influence
+        .iter()
+        .any(|influence| !influence.revealed && influence.card == card)
+}
+
 #[cfg(test)]
 mod tests {
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
     use super::*;
+    use crate::{DeclaredAction, InfluenceCard, PlayerState};
+
+    fn rigged_game(players: Vec<Vec<Card>>) -> GameState {
+        let mut game = GameState::new(players.len(), 1).unwrap();
+        game.players = players
+            .into_iter()
+            .map(|cards| PlayerState {
+                coins: 2,
+                influence: cards
+                    .into_iter()
+                    .map(|card| InfluenceCard {
+                        card,
+                        revealed: false,
+                    })
+                    .collect(),
+            })
+            .collect();
+        game
+    }
 
     #[test]
     fn heuristic_policy_only_returns_legal_moves() {
@@ -339,5 +389,97 @@ mod tests {
             .unwrap();
 
         assert!(legal.contains(&mv));
+    }
+
+    #[test]
+    fn heuristic_blocks_assassination_when_holding_contessa() {
+        let mut game = rigged_game(vec![
+            vec![Card::Assassin, Card::Duke],
+            vec![Card::Contessa, Card::Captain],
+        ]);
+        game.phase = Phase::AwaitingBlock {
+            action: DeclaredAction {
+                actor: 0,
+                kind: ActionKind::Assassinate { target: 1 },
+            },
+            responder_index: 0,
+        };
+        let legal = vec![
+            Move::PassBlock,
+            Move::Block {
+                claim: Card::Contessa,
+            },
+        ];
+        let mut rng = StdRng::seed_from_u64(3);
+
+        let mv = HeuristicRolloutPolicy::new(HeuristicProfile::Balanced)
+            .choose_move(&game, 1, &legal, &mut rng)
+            .unwrap();
+
+        assert_eq!(
+            mv,
+            Move::Block {
+                claim: Card::Contessa
+            }
+        );
+    }
+
+    #[test]
+    fn heuristic_passes_assassination_block_without_contessa() {
+        let mut game = rigged_game(vec![
+            vec![Card::Assassin, Card::Duke],
+            vec![Card::Captain, Card::Captain],
+        ]);
+        game.phase = Phase::AwaitingBlock {
+            action: DeclaredAction {
+                actor: 0,
+                kind: ActionKind::Assassinate { target: 1 },
+            },
+            responder_index: 0,
+        };
+        let legal = vec![
+            Move::PassBlock,
+            Move::Block {
+                claim: Card::Contessa,
+            },
+        ];
+        let mut rng = StdRng::seed_from_u64(3);
+
+        let mv = HeuristicRolloutPolicy::new(HeuristicProfile::Balanced)
+            .choose_move(&game, 1, &legal, &mut rng)
+            .unwrap();
+
+        assert_eq!(mv, Move::PassBlock);
+    }
+
+    #[test]
+    fn heuristic_challenges_impossible_claim() {
+        let mut game = rigged_game(vec![
+            vec![Card::Duke, Card::Captain],
+            vec![Card::Assassin, Card::Contessa],
+        ]);
+        game.players[0].influence.push(InfluenceCard {
+            card: Card::Duke,
+            revealed: true,
+        });
+        game.players[1].influence.push(InfluenceCard {
+            card: Card::Duke,
+            revealed: true,
+        });
+        game.phase = Phase::AwaitingChallenge {
+            action: DeclaredAction {
+                actor: 1,
+                kind: ActionKind::Tax,
+            },
+            responder_index: 0,
+        };
+        let legal = vec![Move::Challenge, Move::PassChallenge];
+        let mut rng = StdRng::seed_from_u64(3);
+
+        let mv = HeuristicRolloutPolicy::new(HeuristicProfile::Balanced)
+            .choose_move(&game, 0, &legal, &mut rng)
+            .unwrap();
+
+        assert_eq!(mv, Move::Challenge);
     }
 }

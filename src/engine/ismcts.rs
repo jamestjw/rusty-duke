@@ -4,7 +4,7 @@ use rand::Rng;
 
 use crate::engine::bot::Bot;
 use crate::engine::eval::evaluate;
-use crate::engine::rollout::{RolloutPolicyKind, rollout};
+use crate::engine::rollout::{RolloutPolicyKind, choose_rollout_move, rollout};
 use crate::{GameState, Move, Observation};
 
 #[derive(Debug, Clone)]
@@ -92,6 +92,18 @@ impl IsmctsBot {
         let legal = state.legal_moves(player);
         if legal.is_empty() {
             return evaluate(state, root_player);
+        }
+
+        if player != root_player {
+            let Some(mv) =
+                choose_rollout_move(state, player, &legal, self.config.rollout_policy, rng)
+            else {
+                return evaluate(state, root_player);
+            };
+            if state.apply_move(player, mv).is_err() {
+                return evaluate(state, root_player);
+            }
+            return self.simulate(tree, state, root_player, depth + 1, rng);
         }
 
         let Ok(observation) = state.observation_for(player) else {
