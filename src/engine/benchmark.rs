@@ -34,11 +34,29 @@ impl Default for BenchmarkConfig {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BenchmarkResult {
     pub games: usize,
-    pub ismcts_wins: usize,
+    pub tracked_wins: usize,
     pub opponent_wins: usize,
     pub draws_or_timeouts: usize,
     pub decisions: usize,
     pub elapsed_ms: u128,
+}
+
+impl BenchmarkResult {
+    pub fn ismcts_wins(self) -> usize {
+        self.tracked_wins
+    }
+
+    pub fn random_wins(self) -> usize {
+        self.opponent_wins
+    }
+
+    pub fn ismcts_win_rate(self) -> f64 {
+        self.tracked_win_rate()
+    }
+
+    pub fn decisive_ismcts_win_rate(self) -> f64 {
+        self.decisive_tracked_win_rate()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +86,7 @@ pub struct HeadToHeadResult {
 pub struct MultiOpponentConfig {
     pub games: usize,
     pub player_count: usize,
-    pub ismcts_bot: BenchmarkBot,
+    pub tracked_bot: BenchmarkBot,
     pub opponent_bot: BenchmarkBot,
     pub max_decisions_per_game: usize,
     pub seed: u64,
@@ -92,19 +110,19 @@ impl HeadToHeadResult {
 }
 
 impl BenchmarkResult {
-    pub fn ismcts_win_rate(self) -> f64 {
+    pub fn tracked_win_rate(self) -> f64 {
         if self.games == 0 {
             return 0.0;
         }
-        self.ismcts_wins as f64 / self.games as f64
+        self.tracked_wins as f64 / self.games as f64
     }
 
-    pub fn decisive_ismcts_win_rate(self) -> f64 {
-        let decisive = self.ismcts_wins + self.opponent_wins;
+    pub fn decisive_tracked_win_rate(self) -> f64 {
+        let decisive = self.tracked_wins + self.opponent_wins;
         if decisive == 0 {
             return 0.0;
         }
-        self.ismcts_wins as f64 / decisive as f64
+        self.tracked_wins as f64 / decisive as f64
     }
 
     pub fn average_decisions_per_game(self) -> f64 {
@@ -126,7 +144,7 @@ pub fn benchmark_ismcts_vs_random(config: BenchmarkConfig) -> BenchmarkResult {
     benchmark_ismcts_vs_opponents(MultiOpponentConfig {
         games: config.games,
         player_count: config.player_count,
-        ismcts_bot: BenchmarkBot::Ismcts {
+        tracked_bot: BenchmarkBot::Ismcts {
             iterations: config.ismcts_iterations,
             max_depth: config.max_depth,
             rollout_policy: config.rollout_policy,
@@ -140,7 +158,7 @@ pub fn benchmark_ismcts_vs_random(config: BenchmarkConfig) -> BenchmarkResult {
 pub fn benchmark_ismcts_vs_opponents(config: MultiOpponentConfig) -> BenchmarkResult {
     let mut result = BenchmarkResult {
         games: config.games,
-        ismcts_wins: 0,
+        tracked_wins: 0,
         opponent_wins: 0,
         draws_or_timeouts: 0,
         decisions: 0,
@@ -152,7 +170,7 @@ pub fn benchmark_ismcts_vs_opponents(config: MultiOpponentConfig) -> BenchmarkRe
         let game_result = play_multi_opponent_game(&config, game_index as u64);
         result.decisions += game_result.decisions;
         match game_result.winner {
-            Some(0) => result.ismcts_wins += 1,
+            Some(player) if player == game_result.tracked_seat => result.tracked_wins += 1,
             Some(_) => result.opponent_wins += 1,
             None => result.draws_or_timeouts += 1,
         }
@@ -205,6 +223,7 @@ pub fn benchmark_head_to_head(
 struct GameBenchmarkResult {
     winner: Option<PlayerId>,
     decisions: usize,
+    tracked_seat: PlayerId,
 }
 
 fn play_multi_opponent_game(config: &MultiOpponentConfig, game_offset: u64) -> GameBenchmarkResult {
@@ -216,15 +235,18 @@ fn play_multi_opponent_game(config: &MultiOpponentConfig, game_offset: u64) -> G
         return GameBenchmarkResult {
             winner: None,
             decisions: 0,
+            tracked_seat: 0,
         };
     };
     let mut rng = StdRng::seed_from_u64(rng_seed);
+    let tracked_seat = game_offset as usize % config.player_count;
 
     for decisions in 0..config.max_decisions_per_game {
         if let Some(winner) = game.winner() {
             return GameBenchmarkResult {
                 winner: Some(winner),
                 decisions,
+                tracked_seat,
             };
         }
 
@@ -232,16 +254,18 @@ fn play_multi_opponent_game(config: &MultiOpponentConfig, game_offset: u64) -> G
             return GameBenchmarkResult {
                 winner: game.winner(),
                 decisions,
+                tracked_seat,
             };
         };
         let Ok(observation) = game.observation_for(player) else {
             return GameBenchmarkResult {
                 winner: None,
                 decisions,
+                tracked_seat,
             };
         };
-        let bot = if player == 0 {
-            config.ismcts_bot
+        let bot = if player == tracked_seat {
+            config.tracked_bot
         } else {
             config.opponent_bot
         };
@@ -251,6 +275,7 @@ fn play_multi_opponent_game(config: &MultiOpponentConfig, game_offset: u64) -> G
             return GameBenchmarkResult {
                 winner: None,
                 decisions,
+                tracked_seat,
             };
         }
     }
@@ -258,6 +283,7 @@ fn play_multi_opponent_game(config: &MultiOpponentConfig, game_offset: u64) -> G
     GameBenchmarkResult {
         winner: None,
         decisions: config.max_decisions_per_game,
+        tracked_seat,
     }
 }
 
@@ -279,6 +305,7 @@ fn play_benchmark_game(
         return GameBenchmarkResult {
             winner: None,
             decisions: 0,
+            tracked_seat: left_seat,
         };
     };
     let mut rng = StdRng::seed_from_u64(seed.wrapping_add(1));
@@ -288,6 +315,7 @@ fn play_benchmark_game(
             return GameBenchmarkResult {
                 winner: Some(winner),
                 decisions,
+                tracked_seat: left_seat,
             };
         }
 
@@ -295,12 +323,14 @@ fn play_benchmark_game(
             return GameBenchmarkResult {
                 winner: game.winner(),
                 decisions,
+                tracked_seat: left_seat,
             };
         };
         let Ok(observation) = game.observation_for(player) else {
             return GameBenchmarkResult {
                 winner: None,
                 decisions,
+                tracked_seat: left_seat,
             };
         };
         let bot_index = if player == left_seat { 0 } else { 1 };
@@ -309,6 +339,7 @@ fn play_benchmark_game(
             return GameBenchmarkResult {
                 winner: None,
                 decisions,
+                tracked_seat: left_seat,
             };
         }
     }
@@ -316,6 +347,7 @@ fn play_benchmark_game(
     GameBenchmarkResult {
         winner: None,
         decisions: max_decisions_per_game,
+        tracked_seat: left_seat,
     }
 }
 
@@ -368,7 +400,7 @@ mod tests {
 
         assert_eq!(result.games, 4);
         assert_eq!(
-            result.ismcts_wins + result.opponent_wins + result.draws_or_timeouts,
+            result.tracked_wins + result.opponent_wins + result.draws_or_timeouts,
             4
         );
         assert!(result.decisions > 0);
@@ -397,7 +429,7 @@ mod tests {
         let result = benchmark_ismcts_vs_opponents(MultiOpponentConfig {
             games: 4,
             player_count: 4,
-            ismcts_bot: BenchmarkBot::Ismcts {
+            tracked_bot: BenchmarkBot::Ismcts {
                 iterations: 5,
                 max_depth: 20,
                 rollout_policy: RolloutPolicyKind::Heuristic(HeuristicProfile::Balanced),
@@ -409,7 +441,7 @@ mod tests {
 
         assert_eq!(result.games, 4);
         assert_eq!(
-            result.ismcts_wins + result.opponent_wins + result.draws_or_timeouts,
+            result.tracked_wins + result.opponent_wins + result.draws_or_timeouts,
             4
         );
         assert!(result.decisions > 0);
@@ -430,13 +462,13 @@ mod tests {
             });
 
             println!(
-                "iterations={iterations:>3} games={} ismcts_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
+                "iterations={iterations:>3} games={} tracked_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
                 result.games,
-                result.ismcts_wins,
+                result.tracked_wins,
                 result.opponent_wins,
                 result.draws_or_timeouts,
-                result.ismcts_win_rate(),
-                result.decisive_ismcts_win_rate(),
+                result.tracked_win_rate(),
+                result.decisive_tracked_win_rate(),
                 result.average_decisions_per_game(),
                 result.average_ms_per_game(),
             );
@@ -461,13 +493,13 @@ mod tests {
             });
 
             println!(
-                "rollout={rollout_policy:?} games={} ismcts_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
+                "rollout={rollout_policy:?} games={} tracked_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
                 result.games,
-                result.ismcts_wins,
+                result.tracked_wins,
                 result.opponent_wins,
                 result.draws_or_timeouts,
-                result.ismcts_win_rate(),
-                result.decisive_ismcts_win_rate(),
+                result.tracked_win_rate(),
+                result.decisive_tracked_win_rate(),
                 result.average_decisions_per_game(),
                 result.average_ms_per_game(),
             );
@@ -497,13 +529,13 @@ mod tests {
             });
 
             println!(
-                "profile={profile:?} games={} ismcts_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
+                "profile={profile:?} games={} tracked_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
                 result.games,
-                result.ismcts_wins,
+                result.tracked_wins,
                 result.opponent_wins,
                 result.draws_or_timeouts,
-                result.ismcts_win_rate(),
-                result.decisive_ismcts_win_rate(),
+                result.tracked_win_rate(),
+                result.decisive_tracked_win_rate(),
                 result.average_decisions_per_game(),
                 result.average_ms_per_game(),
             );
@@ -555,27 +587,111 @@ mod tests {
         let result = benchmark_ismcts_vs_opponents(MultiOpponentConfig {
             games: 250,
             player_count: 4,
-            ismcts_bot: BenchmarkBot::Ismcts {
+            tracked_bot: BenchmarkBot::Ismcts {
                 iterations: 100,
                 max_depth: 80,
                 rollout_policy: RolloutPolicyKind::Heuristic(HeuristicProfile::Balanced),
             },
             opponent_bot: BenchmarkBot::Random,
-            max_decisions_per_game: 700,
+            max_decisions_per_game: 2_000,
             seed: 211,
         });
 
         println!(
-            "4p opponents=Random games={} ismcts_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
+            "4p tracked=ISMCTS opponents=Random games={} tracked_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
             result.games,
-            result.ismcts_wins,
+            result.tracked_wins,
             result.opponent_wins,
             result.draws_or_timeouts,
-            result.ismcts_win_rate(),
-            result.decisive_ismcts_win_rate(),
+            result.tracked_win_rate(),
+            result.decisive_tracked_win_rate(),
             result.average_decisions_per_game(),
             result.average_ms_per_game(),
         );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with `cargo test four_player_random_baseline_benchmark -- --ignored --nocapture`"]
+    fn four_player_random_baseline_benchmark() {
+        let result = benchmark_ismcts_vs_opponents(MultiOpponentConfig {
+            games: 250,
+            player_count: 4,
+            tracked_bot: BenchmarkBot::Random,
+            opponent_bot: BenchmarkBot::Random,
+            max_decisions_per_game: 2_000,
+            seed: 239,
+        });
+
+        println!(
+            "4p tracked=Random opponents=Random games={} tracked_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
+            result.games,
+            result.tracked_wins,
+            result.opponent_wins,
+            result.draws_or_timeouts,
+            result.tracked_win_rate(),
+            result.decisive_tracked_win_rate(),
+            result.average_decisions_per_game(),
+            result.average_ms_per_game(),
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with `cargo test four_player_heuristic_vs_random_benchmark -- --ignored --nocapture`"]
+    fn four_player_heuristic_vs_random_benchmark() {
+        let result = benchmark_ismcts_vs_opponents(MultiOpponentConfig {
+            games: 250,
+            player_count: 4,
+            tracked_bot: BenchmarkBot::Heuristic(HeuristicProfile::Balanced),
+            opponent_bot: BenchmarkBot::Random,
+            max_decisions_per_game: 2_000,
+            seed: 251,
+        });
+
+        println!(
+            "4p tracked=Heuristic(Balanced) opponents=Random games={} tracked_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
+            result.games,
+            result.tracked_wins,
+            result.opponent_wins,
+            result.draws_or_timeouts,
+            result.tracked_win_rate(),
+            result.decisive_tracked_win_rate(),
+            result.average_decisions_per_game(),
+            result.average_ms_per_game(),
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with `cargo test four_player_rollout_policy_benchmark -- --ignored --nocapture`"]
+    fn four_player_rollout_policy_benchmark() {
+        for rollout_policy in [
+            RolloutPolicyKind::Random,
+            RolloutPolicyKind::Heuristic(HeuristicProfile::Balanced),
+        ] {
+            let result = benchmark_ismcts_vs_opponents(MultiOpponentConfig {
+                games: 250,
+                player_count: 4,
+                tracked_bot: BenchmarkBot::Ismcts {
+                    iterations: 100,
+                    max_depth: 80,
+                    rollout_policy,
+                },
+                opponent_bot: BenchmarkBot::Random,
+                max_decisions_per_game: 2_000,
+                seed: 263,
+            });
+
+            println!(
+                "4p tracked=ISMCTS rollout={rollout_policy:?} opponents=Random games={} tracked_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
+                result.games,
+                result.tracked_wins,
+                result.opponent_wins,
+                result.draws_or_timeouts,
+                result.tracked_win_rate(),
+                result.decisive_tracked_win_rate(),
+                result.average_decisions_per_game(),
+                result.average_ms_per_game(),
+            );
+        }
     }
 
     #[test]
@@ -584,24 +700,24 @@ mod tests {
         let result = benchmark_ismcts_vs_opponents(MultiOpponentConfig {
             games: 250,
             player_count: 4,
-            ismcts_bot: BenchmarkBot::Ismcts {
+            tracked_bot: BenchmarkBot::Ismcts {
                 iterations: 100,
                 max_depth: 80,
                 rollout_policy: RolloutPolicyKind::Heuristic(HeuristicProfile::Balanced),
             },
             opponent_bot: BenchmarkBot::Heuristic(HeuristicProfile::Balanced),
-            max_decisions_per_game: 700,
+            max_decisions_per_game: 2_000,
             seed: 307,
         });
 
         println!(
-            "4p opponents=Heuristic(Balanced) games={} ismcts_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
+            "4p tracked=ISMCTS opponents=Heuristic(Balanced) games={} tracked_wins={} opponent_wins={} timeouts={} win_rate={:.2} decisive={:.2} avg_decisions={:.1} avg_ms={:.1}",
             result.games,
-            result.ismcts_wins,
+            result.tracked_wins,
             result.opponent_wins,
             result.draws_or_timeouts,
-            result.ismcts_win_rate(),
-            result.decisive_ismcts_win_rate(),
+            result.tracked_win_rate(),
+            result.decisive_tracked_win_rate(),
             result.average_decisions_per_game(),
             result.average_ms_per_game(),
         );
