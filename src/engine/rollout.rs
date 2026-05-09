@@ -7,7 +7,17 @@ use crate::{ActionKind, Card, GameState, Move, Phase, PlayerId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RolloutPolicyKind {
     Random,
-    Heuristic,
+    Heuristic(HeuristicProfile),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeuristicProfile {
+    Balanced,
+    Aggressive,
+    Conservative,
+    ChallengeHeavy,
+    BlockHeavy,
+    Economic,
 }
 
 impl Default for RolloutPolicyKind {
@@ -42,7 +52,21 @@ impl RolloutPolicy for RandomRolloutPolicy {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct HeuristicRolloutPolicy;
+pub struct HeuristicRolloutPolicy {
+    profile: HeuristicProfile,
+}
+
+impl HeuristicRolloutPolicy {
+    pub fn new(profile: HeuristicProfile) -> Self {
+        Self { profile }
+    }
+}
+
+impl Default for HeuristicProfile {
+    fn default() -> Self {
+        Self::Balanced
+    }
+}
 
 impl RolloutPolicy for HeuristicRolloutPolicy {
     fn choose_move<R: Rng + ?Sized>(
@@ -54,7 +78,7 @@ impl RolloutPolicy for HeuristicRolloutPolicy {
     ) -> Option<Move> {
         legal
             .iter()
-            .max_by_key(|mv| score_move(state, player, mv, rng))
+            .max_by_key(|mv| score_move(state, player, mv, self.profile, rng))
             .cloned()
     }
 }
@@ -79,8 +103,8 @@ pub fn rollout<R: Rng + ?Sized>(
             RolloutPolicyKind::Random => {
                 RandomRolloutPolicy.choose_move(state, player, &legal, rng)
             }
-            RolloutPolicyKind::Heuristic => {
-                HeuristicRolloutPolicy.choose_move(state, player, &legal, rng)
+            RolloutPolicyKind::Heuristic(profile) => {
+                HeuristicRolloutPolicy::new(profile).choose_move(state, player, &legal, rng)
             }
         };
         let Some(mv) = mv else {
@@ -95,26 +119,93 @@ pub fn rollout<R: Rng + ?Sized>(
     evaluate(state, root_player)
 }
 
-fn score_move<R: Rng + ?Sized>(state: &GameState, player: PlayerId, mv: &Move, rng: &mut R) -> i32 {
+fn score_move<R: Rng + ?Sized>(
+    state: &GameState,
+    player: PlayerId,
+    mv: &Move,
+    profile: HeuristicProfile,
+    rng: &mut R,
+) -> i32 {
     let jitter = rng.gen_range(0..4);
-    score_move_base(state, player, mv) + jitter
+    score_move_base(state, player, mv, profile) + jitter
 }
 
-fn score_move_base(state: &GameState, player: PlayerId, mv: &Move) -> i32 {
+fn score_move_base(
+    state: &GameState,
+    player: PlayerId,
+    mv: &Move,
+    profile: HeuristicProfile,
+) -> i32 {
     match mv {
-        Move::Income => 20,
-        Move::ForeignAid => 28,
-        Move::Tax => 45,
-        Move::Exchange => 32,
-        Move::Coup { target } => 80 + target_score(state, *target),
-        Move::Assassinate { target } => 55 + target_score(state, *target),
-        Move::Steal { target } => 35 + state.players[*target].coins.min(2) as i32 * 8,
-        Move::Challenge => challenge_score(state, player),
+        Move::Income => 20 + profile.income_bonus(),
+        Move::ForeignAid => 28 + profile.economy_bonus(),
+        Move::Tax => 45 + profile.economy_bonus(),
+        Move::Exchange => 32 + profile.exchange_bonus(),
+        Move::Coup { target } => 80 + target_score(state, *target) + profile.attack_bonus(),
+        Move::Assassinate { target } => 55 + target_score(state, *target) + profile.attack_bonus(),
+        Move::Steal { target } => {
+            35 + state.players[*target].coins.min(2) as i32 * 8 + profile.attack_bonus() / 2
+        }
+        Move::Challenge => challenge_score(state, player, profile),
         Move::PassChallenge => 25,
-        Move::Block { claim } => block_score(state, player, *claim),
+        Move::Block { claim } => block_score(state, player, *claim, profile),
         Move::PassBlock => 18,
         Move::RevealInfluence { card_index } => reveal_score(state, player, *card_index),
         Move::ExchangeReturn { keep } => exchange_return_score(keep),
+    }
+}
+
+impl HeuristicProfile {
+    fn attack_bonus(self) -> i32 {
+        match self {
+            Self::Aggressive => 18,
+            Self::Conservative => -12,
+            _ => 0,
+        }
+    }
+
+    fn economy_bonus(self) -> i32 {
+        match self {
+            Self::Economic => 16,
+            Self::Conservative => 8,
+            Self::Aggressive => -4,
+            _ => 0,
+        }
+    }
+
+    fn exchange_bonus(self) -> i32 {
+        match self {
+            Self::Conservative => 10,
+            Self::Economic => 6,
+            Self::Aggressive => -4,
+            _ => 0,
+        }
+    }
+
+    fn income_bonus(self) -> i32 {
+        match self {
+            Self::Conservative => 8,
+            Self::Economic => 4,
+            Self::Aggressive => -4,
+            _ => 0,
+        }
+    }
+
+    fn challenge_bonus(self) -> i32 {
+        match self {
+            Self::ChallengeHeavy => 25,
+            Self::Conservative => -12,
+            _ => 0,
+        }
+    }
+
+    fn block_bonus(self) -> i32 {
+        match self {
+            Self::BlockHeavy => 25,
+            Self::Conservative => 8,
+            Self::Aggressive => -8,
+            _ => 0,
+        }
     }
 }
 
@@ -128,15 +219,15 @@ fn target_score(state: &GameState, target: PlayerId) -> i32 {
     influence_bonus + target_state.coins as i32
 }
 
-fn challenge_score(state: &GameState, player: PlayerId) -> i32 {
+fn challenge_score(state: &GameState, player: PlayerId, profile: HeuristicProfile) -> i32 {
     match &state.phase {
         Phase::AwaitingChallenge { action, .. } => action
             .kind
             .claim()
-            .map(|claim| claim_challenge_score(state, player, claim, action.kind))
+            .map(|claim| claim_challenge_score(state, player, claim, action.kind, profile))
             .unwrap_or(0),
         Phase::AwaitingBlockChallenge { block_card, .. } => {
-            claim_challenge_score(state, player, *block_card, ActionKind::ForeignAid)
+            claim_challenge_score(state, player, *block_card, ActionKind::ForeignAid, profile)
         }
         _ => 0,
     }
@@ -147,6 +238,7 @@ fn claim_challenge_score(
     player: PlayerId,
     claim: Card,
     action: ActionKind,
+    profile: HeuristicProfile,
 ) -> i32 {
     if visible_card_count(state, player, claim) >= 3 {
         return 100;
@@ -165,10 +257,10 @@ fn claim_challenge_score(
         0
     };
 
-    12 + impact - risk_penalty
+    12 + impact - risk_penalty + profile.challenge_bonus()
 }
 
-fn block_score(state: &GameState, player: PlayerId, claim: Card) -> i32 {
+fn block_score(state: &GameState, player: PlayerId, claim: Card, profile: HeuristicProfile) -> i32 {
     let has_claim = state.players[player]
         .influence
         .iter()
@@ -184,7 +276,7 @@ fn block_score(state: &GameState, player: PlayerId, claim: Card) -> i32 {
         _ => 0,
     };
 
-    15 + truth_bonus + impact
+    15 + truth_bonus + impact + profile.block_bonus()
 }
 
 fn reveal_score(state: &GameState, player: PlayerId, card_index: usize) -> i32 {
@@ -242,7 +334,7 @@ mod tests {
         let legal = game.legal_moves(player);
         let mut rng = StdRng::seed_from_u64(3);
 
-        let mv = HeuristicRolloutPolicy
+        let mv = HeuristicRolloutPolicy::new(HeuristicProfile::Balanced)
             .choose_move(&game, player, &legal, &mut rng)
             .unwrap();
 
