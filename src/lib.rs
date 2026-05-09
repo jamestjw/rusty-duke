@@ -285,7 +285,7 @@ impl GameState {
         if matches!(self.phase, Phase::Terminal { .. }) {
             return Err(GameError::GameOver);
         }
-        if !self.legal_moves(player).contains(&mv) {
+        if !matches!(mv, Move::ExchangeReturn { .. }) && !self.legal_moves(player).contains(&mv) {
             return Err(GameError::InvalidMove);
         }
 
@@ -672,17 +672,6 @@ impl GameState {
         self.deck.shuffle(&mut self.rng);
         self.end_turn();
         Ok(())
-    }
-
-    fn after_successful_action_challenge_phase(&self, action: DeclaredAction) -> Phase {
-        if self.block_responders(action).is_empty() {
-            self.action_followup_phase(action)
-        } else {
-            Phase::AwaitingBlock {
-                action,
-                responder_index: 0,
-            }
-        }
     }
 
     fn action_followup_phase(&self, action: DeclaredAction) -> Phase {
@@ -1164,5 +1153,137 @@ mod tests {
                 .map(|player| player.influence.len())
                 .sum::<usize>();
         assert_eq!(total_cards, 15);
+    }
+
+    #[test]
+    fn cannot_target_self_or_dead_players() {
+        let mut game = GameState::new(3, 1).unwrap();
+        game.players[0].coins = 7;
+        game.players[2].influence[0].revealed = true;
+        game.players[2].influence[1].revealed = true;
+
+        let legal = game.legal_moves(0);
+        assert!(!legal.contains(&Move::Coup { target: 0 }));
+        assert!(!legal.contains(&Move::Coup { target: 2 }));
+        assert_eq!(
+            game.apply_move(0, Move::Coup { target: 0 }),
+            Err(GameError::InvalidMove)
+        );
+        assert_eq!(
+            game.apply_move(0, Move::Coup { target: 2 }),
+            Err(GameError::InvalidMove)
+        );
+    }
+
+    #[test]
+    fn assassinate_costs_three_and_forces_target_reveal_after_passes() {
+        let mut game = rigged_game(
+            vec![
+                vec![Card::Assassin, Card::Duke],
+                vec![Card::Contessa, Card::Captain],
+            ],
+            vec![Card::Ambassador, Card::Ambassador, Card::Duke],
+        );
+        game.players[0].coins = 3;
+
+        game.apply_move(0, Move::Assassinate { target: 1 }).unwrap();
+        assert_eq!(game.players[0].coins, 0);
+        game.apply_move(1, Move::PassChallenge).unwrap();
+        game.apply_move(1, Move::PassBlock).unwrap();
+
+        assert_eq!(game.active_player(), Some(1));
+        game.apply_move(1, Move::RevealInfluence { card_index: 0 })
+            .unwrap();
+        assert_eq!(game.players[1].hidden_count(), 1);
+        assert_eq!(game.active_player(), Some(1));
+    }
+
+    #[test]
+    fn true_assassination_block_stops_action_and_punishes_challenger() {
+        let mut game = rigged_game(
+            vec![
+                vec![Card::Assassin, Card::Duke],
+                vec![Card::Contessa, Card::Captain],
+            ],
+            vec![Card::Ambassador, Card::Ambassador, Card::Duke],
+        );
+        game.players[0].coins = 3;
+
+        game.apply_move(0, Move::Assassinate { target: 1 }).unwrap();
+        game.apply_move(1, Move::PassChallenge).unwrap();
+        game.apply_move(1, Move::Block { claim: Card::Contessa })
+            .unwrap();
+        game.apply_move(0, Move::Challenge).unwrap();
+        game.apply_move(0, Move::RevealInfluence { card_index: 0 })
+            .unwrap();
+
+        assert_eq!(game.players[0].hidden_count(), 1);
+        assert_eq!(game.players[1].hidden_count(), 2);
+        assert_eq!(game.active_player(), Some(1));
+    }
+
+    #[test]
+    fn false_assassination_block_loses_blocker_influence_and_action_still_resolves() {
+        let mut game = rigged_game(
+            vec![
+                vec![Card::Assassin, Card::Duke],
+                vec![Card::Captain, Card::Captain],
+            ],
+            vec![Card::Ambassador, Card::Ambassador, Card::Duke],
+        );
+        game.players[0].coins = 3;
+
+        game.apply_move(0, Move::Assassinate { target: 1 }).unwrap();
+        game.apply_move(1, Move::PassChallenge).unwrap();
+        game.apply_move(1, Move::Block { claim: Card::Contessa })
+            .unwrap();
+        game.apply_move(0, Move::Challenge).unwrap();
+
+        assert_eq!(game.active_player(), Some(1));
+        game.apply_move(1, Move::RevealInfluence { card_index: 0 })
+            .unwrap();
+        assert_eq!(game.players[1].hidden_count(), 1);
+        assert_eq!(game.active_player(), Some(1));
+        game.apply_move(1, Move::RevealInfluence { card_index: 1 })
+            .unwrap();
+
+        assert_eq!(game.players[1].hidden_count(), 0);
+        assert_eq!(game.winner(), Some(0));
+    }
+
+    #[test]
+    fn exchange_draws_two_and_returns_unkept_cards_to_deck() {
+        let mut game = rigged_game(
+            vec![
+                vec![Card::Ambassador, Card::Duke],
+                vec![Card::Captain, Card::Assassin],
+            ],
+            vec![Card::Contessa, Card::Captain, Card::Duke],
+        );
+
+        game.apply_move(0, Move::Exchange).unwrap();
+        game.apply_move(1, Move::PassChallenge).unwrap();
+
+        let drawn = match &game.phase {
+            Phase::AwaitingExchangeReturn { player, drawn } => {
+                assert_eq!(*player, 0);
+                drawn.clone()
+            }
+            phase => panic!("unexpected phase: {phase:?}"),
+        };
+        assert_eq!(drawn.len(), 2);
+
+        game.apply_move(
+            0,
+            Move::ExchangeReturn {
+                keep: vec![Card::Ambassador, drawn[0]],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(game.players[0].hidden_count(), 2);
+        assert!(game.hidden_cards(0).contains(&Card::Ambassador));
+        assert_eq!(game.deck.len(), 3);
+        assert_eq!(game.active_player(), Some(1));
     }
 }
