@@ -9,7 +9,7 @@ pub fn evaluate(state: &GameState, root_player: PlayerId) -> f64 {
         return 0.0;
     };
 
-    let root_score = root.hidden_count() as f64 * 10.0 + root.coins as f64;
+    let root_score = material_score(root.hidden_count(), root.coins);
     let mut opponent_score = 0.0;
     let mut opponent_count = 0.0;
     for (_, opponent) in state
@@ -18,7 +18,7 @@ pub fn evaluate(state: &GameState, root_player: PlayerId) -> f64 {
         .enumerate()
         .filter(|(player, state)| *player != root_player && state.is_alive())
     {
-        opponent_score += opponent.hidden_count() as f64 * 10.0 + opponent.coins as f64;
+        opponent_score += material_score(opponent.hidden_count(), opponent.coins);
         opponent_count += 1.0;
     }
     let average_opponent_score = if opponent_count > 0.0 {
@@ -28,4 +28,15 @@ pub fn evaluate(state: &GameState, root_player: PlayerId) -> f64 {
     };
 
     (0.5 + (root_score - average_opponent_score) / 100.0).clamp(0.0, 1.0)
+}
+
+fn material_score(hidden_count: usize, coins: u8) -> f64 {
+    let coup_pressure = if coins >= 10 {
+        8.0
+    } else if coins >= 7 {
+        5.0
+    } else {
+        0.0
+    };
+    hidden_count as f64 * 10.0 + coins as f64 + coup_pressure
 }
