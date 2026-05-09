@@ -2,6 +2,8 @@ use rand::prelude::*;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 
+pub mod engine;
+
 pub type PlayerId = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,7 +45,7 @@ impl PlayerState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActionKind {
     ForeignAid,
     Tax,
@@ -71,13 +73,13 @@ impl ActionKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeclaredAction {
     pub actor: PlayerId,
     pub kind: ActionKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Phase {
     AwaitingAction {
         actor: PlayerId,
@@ -109,7 +111,7 @@ pub enum Phase {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Move {
     Income,
     ForeignAid,
@@ -139,7 +141,7 @@ pub enum GameError {
     GameOver,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ObservedPlayer {
     pub coins: u8,
     pub hidden_influence: usize,
@@ -147,7 +149,7 @@ pub struct ObservedPlayer {
     pub alive: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Observation {
     pub viewer: PlayerId,
     pub players: Vec<ObservedPlayer>,
@@ -1211,8 +1213,13 @@ mod tests {
 
         game.apply_move(0, Move::Assassinate { target: 1 }).unwrap();
         game.apply_move(1, Move::PassChallenge).unwrap();
-        game.apply_move(1, Move::Block { claim: Card::Contessa })
-            .unwrap();
+        game.apply_move(
+            1,
+            Move::Block {
+                claim: Card::Contessa,
+            },
+        )
+        .unwrap();
         game.apply_move(0, Move::Challenge).unwrap();
         game.apply_move(0, Move::RevealInfluence { card_index: 0 })
             .unwrap();
@@ -1235,8 +1242,13 @@ mod tests {
 
         game.apply_move(0, Move::Assassinate { target: 1 }).unwrap();
         game.apply_move(1, Move::PassChallenge).unwrap();
-        game.apply_move(1, Move::Block { claim: Card::Contessa })
-            .unwrap();
+        game.apply_move(
+            1,
+            Move::Block {
+                claim: Card::Contessa,
+            },
+        )
+        .unwrap();
         game.apply_move(0, Move::Challenge).unwrap();
 
         assert_eq!(game.active_player(), Some(1));
@@ -1285,5 +1297,54 @@ mod tests {
         assert!(game.hidden_cards(0).contains(&Card::Ambassador));
         assert_eq!(game.deck.len(), 3);
         assert_eq!(game.active_player(), Some(1));
+    }
+
+    #[test]
+    fn random_bot_returns_legal_move_for_observation() {
+        let game = GameState::new(3, 1).unwrap();
+        let observation = game.observation_for(0).unwrap();
+        let mut bot = crate::engine::RandomBot;
+        let mut rng = StdRng::seed_from_u64(7);
+
+        let mv = crate::engine::Bot::choose_move(&mut bot, &observation, &mut rng).unwrap();
+
+        assert!(game.legal_moves(0).contains(&mv));
+    }
+
+    #[test]
+    fn ismcts_bot_returns_legal_move_for_observation() {
+        let game = GameState::new(3, 1).unwrap();
+        let observation = game.observation_for(0).unwrap();
+        let mut bot = crate::engine::IsmctsBot::new(crate::engine::SearchConfig {
+            iterations: 25,
+            max_depth: 20,
+            exploration: 1.4,
+        });
+        let mut rng = StdRng::seed_from_u64(7);
+
+        let mv = crate::engine::Bot::choose_move(&mut bot, &observation, &mut rng).unwrap();
+
+        assert!(game.legal_moves(0).contains(&mv));
+    }
+
+    #[test]
+    fn ismcts_bot_is_deterministic_with_seeded_rng() {
+        let game = GameState::new(3, 1).unwrap();
+        let observation = game.observation_for(0).unwrap();
+        let config = crate::engine::SearchConfig {
+            iterations: 25,
+            max_depth: 20,
+            exploration: 1.4,
+        };
+        let mut first_bot = crate::engine::IsmctsBot::new(config.clone());
+        let mut second_bot = crate::engine::IsmctsBot::new(config);
+        let mut first_rng = StdRng::seed_from_u64(11);
+        let mut second_rng = StdRng::seed_from_u64(11);
+
+        let first = crate::engine::Bot::choose_move(&mut first_bot, &observation, &mut first_rng);
+        let second =
+            crate::engine::Bot::choose_move(&mut second_bot, &observation, &mut second_rng);
+
+        assert_eq!(first, second);
     }
 }
