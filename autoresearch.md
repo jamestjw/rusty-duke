@@ -41,3 +41,6 @@ Correctness backpressure: `autoresearch.checks.sh` runs `cargo test --quiet` aft
 - Kept: changing final ISMCTS best child from mean reward to total accumulated reward raised score to 103 (36/80 4p random, 21/60 4p heuristic, 46/80 h2h). It likely balances confidence and value at low iteration counts.
 - Discarded: heuristic rollout Coup base 100 and 70 both underperformed base 80; 70 helped h2h but hurt multiplayer.
 - Discarded: changing heuristic jitter from 0..4 to none, 0..8, or 0..2 hurt aggregate; keep 0..4.
+- Kept: raising heuristic challenge base from 12 through 42 produced major gains; current best strength_score=157 with challenge base 42 (56/80 4p random, 38/60 4p heuristic, 63/80 h2h).
+- Discarded: challenge base 40, 44, and 48 underperformed 42. Higher values help h2h but hurt multiplayer; 42 is local aggregate optimum.
+- Discarded: changing one-influence challenge risk penalty from 20 to 30 or 10 underperformed; keep 20.
