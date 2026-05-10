@@ -269,7 +269,7 @@ fn claim_challenge_score(
         return 100;
     }
 
-    let scarcity_bonus = if visible_count == 2 { 18 } else { 0 };
+    let scarcity_bonus = if visible_count == 2 { 10 } else { 0 };
     let impact = match action {
         ActionKind::Assassinate { .. } => 25,
         ActionKind::Steal { .. } => 15,
