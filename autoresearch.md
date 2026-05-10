@@ -38,5 +38,6 @@ Correctness backpressure: `autoresearch.checks.sh` runs `cargo test --quiet` aft
 - Discarded: hidden influence material weights of 12 and 8 both hurt badly. Keep hidden_count weight at 10.
 - Discarded: coup-pressure bonus sizes 7/12 and 3/5 underperformed current 5/8.
 - Discarded: changing final ISMCTS best child from mean reward to visit count hurt aggregate strength.
+- Kept: changing final ISMCTS best child from mean reward to total accumulated reward raised score to 103 (36/80 4p random, 21/60 4p heuristic, 46/80 h2h). It likely balances confidence and value at low iteration counts.
 - Discarded: heuristic rollout Coup base 100 and 70 both underperformed base 80; 70 helped h2h but hurt multiplayer.
 - Discarded: changing heuristic jitter from 0..4 to none, 0..8, or 0..2 hurt aggregate; keep 0..4.

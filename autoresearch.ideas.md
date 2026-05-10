@@ -1,0 +1,2 @@
+- Adaptive opponent modeling: all-random non-root simulation gave 55/80 wins vs random but hurt heuristic/h2h; consider tracking opponent behavior or adding configurable opponent model rather than fixed random/heuristic/mix.
+- Benchmark weighting/finalization: several discarded changes improve h2h while hurting 4-player random; if objective changes, revisit Coup base 70, no heuristic jitter, and target coin weighting.
