@@ -233,11 +233,7 @@ impl Node {
         self.edges
             .iter()
             .filter(|(_, edge)| edge.visits > 0)
-            .max_by(|(_, left), (_, right)| {
-                let left_score = left.total_reward / left.visits as f64;
-                let right_score = right.total_reward / right.visits as f64;
-                left_score.total_cmp(&right_score)
-            })
+            .max_by(|(_, left), (_, right)| left.total_reward.total_cmp(&right.total_reward))
             .map(|(mv, _)| mv.clone())
     }
 }
