@@ -238,6 +238,8 @@ fn target_score(state: &GameState, target: PlayerId) -> i32 {
 fn claim_truth_score(state: &GameState, player: PlayerId, claim: Card) -> i32 {
     if has_hidden_card(state, player, claim) {
         18
+    } else if visible_card_count(state, player, claim) >= 3 {
+        -100
     } else {
         -18
     }
@@ -483,5 +485,33 @@ mod tests {
             .unwrap();
 
         assert_eq!(mv, Move::Challenge);
+    }
+
+    #[test]
+    fn heuristic_avoids_making_impossible_claim() {
+        let mut game = rigged_game(vec![vec![Card::Captain], vec![Card::Captain]]);
+        game.players[0].coins = 0;
+        game.players[1].coins = 6;
+        game.players[0].influence.push(InfluenceCard {
+            card: Card::Assassin,
+            revealed: true,
+        });
+        game.players[0].influence.push(InfluenceCard {
+            card: Card::Assassin,
+            revealed: true,
+        });
+        game.players[1].influence.push(InfluenceCard {
+            card: Card::Assassin,
+            revealed: true,
+        });
+        game.phase = Phase::AwaitingAction { actor: 1 };
+        let legal = game.legal_moves(1);
+        let mut rng = StdRng::seed_from_u64(3);
+
+        let mv = HeuristicRolloutPolicy::new(HeuristicProfile::Balanced)
+            .choose_move(&game, 1, &legal, &mut rng)
+            .unwrap();
+
+        assert_ne!(mv, Move::Assassinate { target: 0 });
     }
 }
