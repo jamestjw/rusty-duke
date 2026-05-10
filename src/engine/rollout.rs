@@ -285,7 +285,7 @@ fn claim_challenge_score(
         0
     };
 
-    42 + impact + scarcity_bonus - risk_penalty + profile.challenge_bonus()
+    12 + impact + scarcity_bonus - risk_penalty + profile.challenge_bonus()
 }
 
 fn block_score(state: &GameState, player: PlayerId, claim: Card, profile: HeuristicProfile) -> i32 {
@@ -485,6 +485,34 @@ mod tests {
             .unwrap();
 
         assert_eq!(mv, Move::Challenge);
+    }
+
+    #[test]
+    fn balanced_heuristic_passes_plausible_steal_challenge_on_last_influence() {
+        let mut game = rigged_game(vec![vec![Card::Captain], vec![Card::Captain]]);
+        game.players[0].influence.push(InfluenceCard {
+            card: Card::Contessa,
+            revealed: true,
+        });
+        game.players[1].influence.push(InfluenceCard {
+            card: Card::Contessa,
+            revealed: true,
+        });
+        game.phase = Phase::AwaitingChallenge {
+            action: DeclaredAction {
+                actor: 1,
+                kind: ActionKind::Steal { target: 0 },
+            },
+            responder_index: 0,
+        };
+        let legal = vec![Move::Challenge, Move::PassChallenge];
+        let mut rng = StdRng::seed_from_u64(3);
+
+        let mv = HeuristicRolloutPolicy::new(HeuristicProfile::Balanced)
+            .choose_move(&game, 0, &legal, &mut rng)
+            .unwrap();
+
+        assert_eq!(mv, Move::PassChallenge);
     }
 
     #[test]
