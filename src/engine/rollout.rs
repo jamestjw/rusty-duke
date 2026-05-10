@@ -281,7 +281,7 @@ fn claim_challenge_score(
         0
     };
 
-    30 + impact - risk_penalty + profile.challenge_bonus()
+    34 + impact - risk_penalty + profile.challenge_bonus()
 }
 
 fn block_score(state: &GameState, player: PlayerId, claim: Card, profile: HeuristicProfile) -> i32 {
