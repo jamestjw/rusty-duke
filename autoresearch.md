@@ -32,4 +32,11 @@ Correctness backpressure: `autoresearch.checks.sh` runs `cargo test --quiet` aft
 - Primary metric is deterministic strength, not runtime; large speed regressions should be noted but wins decide keep/discard.
 
 ## What's Been Tried
-- Initial setup: benchmark aggregates 4-player vs Random, 4-player vs Balanced heuristic, and 2-player head-to-head vs Balanced heuristic.
+- Initial setup: benchmark aggregates 4-player vs Random, 4-player vs Balanced heuristic, and 2-player head-to-head vs Balanced heuristic. Baseline strength_score=80 (23/80 4p random, 18/60 4p heuristic, 39/80 h2h).
+- Kept: evaluation now compares root material to the average living opponent instead of fixed opponent_sum/2. Raised score to 96, mostly from 4p random and h2h.
+- Kept: evaluation adds coup-pressure bonuses at 7+ and 10+ coins. Raised score to 99 and greatly reduced total decisions/timeouts.
+- Discarded: hidden influence material weights of 12 and 8 both hurt badly. Keep hidden_count weight at 10.
+- Discarded: coup-pressure bonus sizes 7/12 and 3/5 underperformed current 5/8.
+- Discarded: changing final ISMCTS best child from mean reward to visit count hurt aggregate strength.
+- Discarded: heuristic rollout Coup base 100 and 70 both underperformed base 80; 70 helped h2h but hurt multiplayer.
+- Discarded: changing heuristic jitter from 0..4 to none, 0..8, or 0..2 hurt aggregate; keep 0..4.
