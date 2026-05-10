@@ -264,10 +264,12 @@ fn claim_challenge_score(
     action: ActionKind,
     profile: HeuristicProfile,
 ) -> i32 {
-    if visible_card_count(state, player, claim) >= 3 {
+    let visible_count = visible_card_count(state, player, claim);
+    if visible_count >= 3 {
         return 100;
     }
 
+    let scarcity_bonus = if visible_count == 2 { 10 } else { 0 };
     let impact = match action {
         ActionKind::Assassinate { .. } => 25,
         ActionKind::Steal { .. } => 15,
@@ -281,7 +283,7 @@ fn claim_challenge_score(
         0
     };
 
-    12 + impact - risk_penalty + profile.challenge_bonus()
+    42 + impact + scarcity_bonus - risk_penalty + profile.challenge_bonus()
 }
 
 fn block_score(state: &GameState, player: PlayerId, claim: Card, profile: HeuristicProfile) -> i32 {
