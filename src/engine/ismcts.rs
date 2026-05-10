@@ -35,6 +35,29 @@ impl IsmctsBot {
     pub fn new(config: SearchConfig) -> Self {
         Self { config }
     }
+
+    pub fn root_stats<R: Rng + ?Sized>(
+        &self,
+        observation: &Observation,
+        rng: &mut R,
+    ) -> Vec<(Move, u32, f64)> {
+        let Some((tree, root_key)) = self.search_tree(observation, rng) else {
+            return Vec::new();
+        };
+        tree.stats(&root_key)
+    }
+
+    pub fn stats_for<R: Rng + ?Sized>(
+        &self,
+        root_observation: &Observation,
+        query_observation: &Observation,
+        rng: &mut R,
+    ) -> Vec<(Move, u32, f64)> {
+        let Some((tree, _)) = self.search_tree(root_observation, rng) else {
+            return Vec::new();
+        };
+        tree.stats(&InfoSetKey(query_observation.clone()))
+    }
 }
 
 impl Default for IsmctsBot {
@@ -50,19 +73,12 @@ impl Bot for IsmctsBot {
         rng: &mut R,
     ) -> Option<Move> {
         let root_state = GameState::determinize(observation, rng.r#gen()).ok()?;
-        let root_player = root_state.active_player()?;
-        let root_legal = root_state.legal_moves(root_player);
+        let root_legal = root_state.legal_moves(root_state.active_player()?);
         if root_legal.is_empty() {
             return None;
         }
 
-        let root_key = InfoSetKey(observation.clone());
-        let mut tree = SearchTree::default();
-
-        for _ in 0..self.config.iterations.max(1) {
-            let mut state = GameState::determinize(observation, rng.r#gen()).ok()?;
-            let _ = self.simulate(&mut tree, &mut state, root_player, 0, rng);
-        }
+        let (tree, root_key) = self.search_tree(observation, rng)?;
 
         tree.best_move(&root_key)
             .filter(|mv| root_legal.contains(mv))
@@ -71,6 +87,24 @@ impl Bot for IsmctsBot {
 }
 
 impl IsmctsBot {
+    fn search_tree<R: Rng + ?Sized>(
+        &self,
+        observation: &Observation,
+        rng: &mut R,
+    ) -> Option<(SearchTree, InfoSetKey)> {
+        let root_state = GameState::determinize(observation, rng.r#gen()).ok()?;
+        let root_player = root_state.active_player()?;
+        let root_key = InfoSetKey(observation.clone());
+        let mut tree = SearchTree::default();
+
+        for _ in 0..self.config.iterations.max(1) {
+            let mut state = GameState::determinize(observation, rng.r#gen()).ok()?;
+            let _ = self.simulate(&mut tree, &mut state, root_player, 0, rng);
+        }
+
+        Some((tree, root_key))
+    }
+
     fn simulate<R: Rng + ?Sized>(
         &self,
         tree: &mut SearchTree,
@@ -191,6 +225,20 @@ impl SearchTree {
 
     fn best_move(&self, key: &InfoSetKey) -> Option<Move> {
         self.nodes.get(key)?.best_move()
+    }
+
+    fn stats(&self, key: &InfoSetKey) -> Vec<(Move, u32, f64)> {
+        let Some(node) = self.nodes.get(key) else {
+            return Vec::new();
+        };
+        let mut stats: Vec<_> = node
+            .edges
+            .iter()
+            .filter(|(_, edge)| edge.visits > 0)
+            .map(|(mv, edge)| (mv.clone(), edge.visits, edge.total_reward / edge.visits as f64))
+            .collect();
+        stats.sort_by(|left, right| right.2.total_cmp(&left.2));
+        stats
     }
 }
 

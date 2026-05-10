@@ -116,6 +116,24 @@ fn main() {
         println!("ismcts seed {seed}: challenge={challenge:?} block={block:?}");
     }
 
+    println!("\nISMCTS challenge root stats:");
+    let bot = IsmctsBot::new(SearchConfig {
+        iterations: 50_000,
+        max_depth: 80,
+        exploration: 1.4,
+        rollout_policy: RolloutPolicyKind::Heuristic(HeuristicProfile::Balanced),
+    });
+    let mut rng = StdRng::seed_from_u64(1);
+    for (mv, visits, avg) in bot.root_stats(&challenge_obs, &mut rng) {
+        println!("{mv:?}: visits={visits} avg={avg}");
+    }
+
+    println!("\nISMCTS block node stats inside challenge search:");
+    let mut rng = StdRng::seed_from_u64(1);
+    for (mv, visits, avg) in bot.stats_for(&challenge_obs, &block_obs, &mut rng) {
+        println!("{mv:?}: visits={visits} avg={avg}");
+    }
+
     println!("\nChallenge decision EV:");
     for mv in [Move::Challenge, Move::PassChallenge] {
         let mut sum_eval = 0.0;
