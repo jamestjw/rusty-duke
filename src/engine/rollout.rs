@@ -4,26 +4,22 @@ use rand::seq::SliceRandom;
 use crate::engine::eval::evaluate;
 use crate::{ActionKind, Card, GameState, Move, Phase, PlayerId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RolloutPolicyKind {
+    #[default]
     Random,
     Heuristic(HeuristicProfile),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HeuristicProfile {
+    #[default]
     Balanced,
     Aggressive,
     Conservative,
     ChallengeHeavy,
     BlockHeavy,
     Economic,
-}
-
-impl Default for RolloutPolicyKind {
-    fn default() -> Self {
-        Self::Random
-    }
 }
 
 pub trait RolloutPolicy {
@@ -59,12 +55,6 @@ pub struct HeuristicRolloutPolicy {
 impl HeuristicRolloutPolicy {
     pub fn new(profile: HeuristicProfile) -> Self {
         Self { profile }
-    }
-}
-
-impl Default for HeuristicProfile {
-    fn default() -> Self {
-        Self::Balanced
     }
 }
 

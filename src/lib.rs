@@ -786,16 +786,18 @@ impl GameState {
         if let Some(winner) = self.only_living_player() {
             self.phase = Phase::Terminal { winner };
         }
-        if let Phase::AwaitingExchangeReturn { player, drawn } = self.phase.clone() {
-            if drawn.is_empty() {
-                let drawn = vec![self.deck.pop().unwrap(), self.deck.pop().unwrap()];
-                self.phase = Phase::AwaitingExchangeReturn { player, drawn };
-            }
+        if matches!(&self.phase, Phase::AwaitingExchangeReturn { drawn, .. } if drawn.is_empty())
+            && let Phase::AwaitingExchangeReturn { player, .. } =
+                std::mem::replace(&mut self.phase, Phase::Terminal { winner: 0 })
+        {
+            let drawn = vec![
+                self.deck.pop().expect("deck exhausted: invalid game state"),
+                self.deck.pop().expect("deck exhausted: invalid game state"),
+            ];
+            self.phase = Phase::AwaitingExchangeReturn { player, drawn };
         }
-        if let Phase::AwaitingAction { actor } = self.phase {
-            if !self.players[actor].is_alive() {
-                self.end_turn();
-            }
+        if matches!(&self.phase, Phase::AwaitingAction { actor } if !self.players[*actor].is_alive()) {
+            self.end_turn()
         }
     }
 
