@@ -1,12 +1,13 @@
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use std::collections::HashSet;
 
 pub mod engine;
 
 pub type PlayerId = usize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Card {
     Duke,
     Assassin,
@@ -918,14 +919,12 @@ fn combinations(cards: &[Card], keep_count: usize) -> Vec<Vec<Card>> {
         keep_count: usize,
         start: usize,
         current: &mut Vec<Card>,
-        out: &mut Vec<Vec<Card>>,
+        out: &mut HashSet<Vec<Card>>,
     ) {
         if current.len() == keep_count {
             let mut next = current.clone();
             next.sort_by_key(|card| *card as u8);
-            if !out.contains(&next) {
-                out.push(next);
-            }
+            out.insert(next);
             return;
         }
         for index in start..cards.len() {
@@ -935,8 +934,14 @@ fn combinations(cards: &[Card], keep_count: usize) -> Vec<Vec<Card>> {
         }
     }
 
-    let mut out = Vec::new();
+    let mut out = HashSet::new();
     go(cards, keep_count, 0, &mut Vec::new(), &mut out);
+    let mut out: Vec<_> = out.into_iter().collect();
+    out.sort_by_key(|v| {
+        let mut sorted = v.clone();
+        sorted.sort_by_key(|card| *card as u8);
+        sorted
+    });
     out
 }
 
