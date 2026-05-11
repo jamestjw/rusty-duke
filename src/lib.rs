@@ -1,3 +1,35 @@
+//! # Rusty Duke
+//!
+//! A pure Rust implementation of the card game [Coup](https://coup.games/).
+//!
+//! ## Overview
+//!
+//! This crate provides a complete, deterministic game engine for Coup, supporting:
+//! - Full game rules (actions, challenges, blocks, coups, exchanges)
+//! - Partial observability with `Observation` and `determinize` for ISMCTS
+//! - Pluggable AI bots (`RandomBot`, `HeuristicBot`, `IsmctsBot`)
+//! - Benchmarking harness for bot evaluation
+//!
+//! ## Game Flow
+//!
+//! 1. Create a [`GameState`] with [`GameState::new`].
+//! 2. Call [`GameState::legal_moves`] for the active player.
+//! 3. Call [`GameState::apply_move`] to execute a move.
+//! 4. Repeat until a winner is determined ([`GameState::winner`]).
+//!
+//! ## Example
+//!
+//! ```
+//! use rusty_duke::{GameState, Move};
+//!
+//! let mut game = GameState::new(3, 42).unwrap();
+//! while game.winner().is_none() {
+//!     let moves = game.legal_moves(game.active_player().unwrap());
+//!     game.apply_move(game.active_player().unwrap(), moves[0].clone()).unwrap();
+//! }
+//! println!("Winner: {:?}", game.winner());
+//! ```
+
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -5,6 +37,7 @@ use std::collections::HashSet;
 
 pub mod engine;
 
+/// Unique identifier for a player (0-indexed).
 pub type PlayerId = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -16,27 +49,40 @@ pub enum Card {
     Contessa,
 }
 
+/// A card that has been revealed, losing its owner an influence slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InfluenceCard {
+    /// The card type.
     pub card: Card,
+    /// Whether this card has been revealed (and thus lost).
     pub revealed: bool,
 }
 
+/// The state of a single player during a game.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerState {
+    /// The number of coins this player holds.
     pub coins: u8,
+    /// This player's influence cards, ordered front to back.
+    ///
+    /// A card with `revealed: true` has been lost and no longer
+    /// provides influence. A player is eliminated when all cards
+    /// are revealed.
     pub influence: Vec<InfluenceCard>,
 }
 
 impl PlayerState {
+    /// Returns `true` if this player still has hidden influence cards.
     pub fn is_alive(&self) -> bool {
         self.influence.iter().any(|card| !card.revealed)
     }
 
+    /// Returns the number of unrevealed influence cards.
     pub fn hidden_count(&self) -> usize {
         self.influence.iter().filter(|card| !card.revealed).count()
     }
 
+    /// Returns the list of card types that have been revealed.
     pub fn revealed_cards(&self) -> Vec<Card> {
         self.influence
             .iter()
@@ -46,12 +92,18 @@ impl PlayerState {
     }
 }
 
+/// An action that a player may declare on their turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActionKind {
+    /// Take 1 coin from the treasury (no block possible).
     ForeignAid,
+    /// Take 3 coins, claiming to be the Duke.
     Tax,
+    /// Pay 3 coins to force a target to reveal an influence card.
     Assassinate { target: PlayerId },
+    /// Take up to 2 coins from a target, claiming to be the Captain.
     Steal { target: PlayerId },
+    /// Swap influence cards with the deck, claiming to be the Ambassador.
     Exchange,
 }
 
@@ -74,101 +126,174 @@ impl ActionKind {
     }
 }
 
+/// A declaration of an action by a specific player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeclaredAction {
+    /// The player who declared the action.
     pub actor: PlayerId,
+    /// The kind of action being declared.
     pub kind: ActionKind,
 }
 
+/// The current phase of a game turn, determining what moves are legal.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Phase {
+    /// Awaiting the active player's action declaration.
     AwaitingAction {
+        /// The player who must act.
         actor: PlayerId,
     },
+    /// Awaiting responses to a challenge of a declared action.
     AwaitingChallenge {
+        /// The action being challenged.
         action: DeclaredAction,
+        /// Index into the list of eligible challengers.
         responder_index: usize,
     },
+    /// Awaiting responses to a block of a declared action.
     AwaitingBlock {
+        /// The action being blocked.
         action: DeclaredAction,
+        /// Index into the list of eligible blockers.
         responder_index: usize,
     },
+    /// Awaiting responses to a challenge of a block.
     AwaitingBlockChallenge {
+        /// The action that was blocked.
         action: DeclaredAction,
+        /// The player who played the block.
         blocker: PlayerId,
+        /// The card claimed for the block.
         block_card: Card,
+        /// Index into the list of eligible block challengers.
         responder_index: usize,
     },
+    /// Awaiting a player to lose an influence card.
     AwaitingInfluenceLoss {
+        /// The player who must reveal a card.
         player: PlayerId,
+        /// The phase to resume after the loss.
         next: Box<Phase>,
     },
+    /// Awaiting an exchange action's return cards.
     AwaitingExchangeReturn {
+        /// The player performing the exchange.
         player: PlayerId,
+        /// The cards drawn from the deck.
         drawn: Vec<Card>,
     },
+    /// The game has ended.
     Terminal {
+        /// The winning player.
         winner: PlayerId,
     },
 }
 
+/// Possible actions a player can take on their turn.
+///
+/// Note: `Challenge` and `PassChallenge` are used in response to declared
+/// actions, and `Block` / `PassBlock` are used in response to blocks.
+/// `RevealInfluence` is used when a player must lose an influence card.
+/// `ExchangeReturn` specifies which cards to keep after an exchange.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Move {
+    /// Take 1 coin (no contestable action).
     Income,
+    /// Take 2 coins from the treasury (can be blocked by Duke).
     ForeignAid,
+    /// Take 3 coins (claim Duke).
     Tax,
+    /// Force target to reveal an influence card (claim Assassin, costs 3).
     Assassinate { target: PlayerId },
+    /// Take up to 2 coins from target (claim Captain).
     Steal { target: PlayerId },
+    /// Draw 2 cards, return 2 (claim Ambassador).
     Exchange,
+    /// Force target to reveal an influence card (costs 7, no claim).
     Coup { target: PlayerId },
+    /// Challenge the current declared action.
     Challenge,
+    /// Accept the current declared action without challenging.
     PassChallenge,
+    /// Block the current action by claiming a card.
     Block { claim: Card },
+    /// Decline to block the current action.
     PassBlock,
+    /// Reveal a specific influence card when forced to lose one.
     RevealInfluence { card_index: usize },
+    /// Return the chosen cards after an exchange.
     ExchangeReturn { keep: Vec<Card> },
 }
 
+/// Errors that can occur during game operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GameError {
+    /// The specified player index is out of bounds.
     InvalidPlayer,
+    /// The player count is not between 2 and 6.
     InvalidPlayerCount,
+    /// The move is not legal in the current game state.
     InvalidMove,
+    /// It is not the specified player's turn.
     NotPlayersTurn,
+    /// The player does not have enough coins for the action.
     NotEnoughCoins,
+    /// The specified target is invalid.
     InvalidTarget,
+    /// The player does not have the required influence card.
     InvalidInfluence,
+    /// The exchange return is invalid.
     InvalidExchangeReturn,
+    /// The game is already over.
     GameOver,
 }
 
+/// A player's view of the game, hiding opponents' hidden cards.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ObservedPlayer {
+    /// The number of coins this player has.
     pub coins: u8,
+    /// The number of hidden (unrevealed) influence cards.
     pub hidden_influence: usize,
+    /// The card types this player has revealed.
     pub revealed: Vec<Card>,
+    /// Whether this player is still alive.
     pub alive: bool,
 }
 
+/// A player's complete view of the game state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Observation {
+    /// The player making this observation.
     pub viewer: PlayerId,
+    /// Each player's observed state.
     pub players: Vec<ObservedPlayer>,
+    /// The viewer's own hidden influence cards.
     pub own_hidden_cards: Vec<Card>,
+    /// The number of cards remaining in the deck.
     pub deck_size: usize,
+    /// The index of the player whose turn it is, if any.
     pub current_player: Option<PlayerId>,
+    /// The current phase of the game.
     pub phase: Phase,
 }
 
+/// The full game state, used by the engine to manage game progression.
 #[derive(Debug, Clone)]
 pub struct GameState {
+    /// All players' states.
     pub players: Vec<PlayerState>,
+    /// The remaining deck of cards.
     pub deck: Vec<Card>,
+    /// The current game phase.
     pub phase: Phase,
     rng: StdRng,
 }
 
 impl GameState {
+    /// Creates a new game with the given number of players and random seed.
+    ///
+    /// Returns an error if `player_count` is not between 2 and 6 (inclusive).
     pub fn new(player_count: usize, seed: u64) -> Result<Self, GameError> {
         if !(2..=6).contains(&player_count) {
             return Err(GameError::InvalidPlayerCount);
@@ -205,6 +330,10 @@ impl GameState {
         })
     }
 
+    /// Returns the player whose turn it is, if the game is not over.
+    ///
+    /// In challenge and block phases, this is the player currently
+    /// expected to respond.
     pub fn active_player(&self) -> Option<PlayerId> {
         match &self.phase {
             Phase::AwaitingAction { actor } => Some(*actor),
@@ -236,6 +365,9 @@ impl GameState {
         }
     }
 
+    /// Returns the winner if the game is over, or `None` if it is still
+    /// in progress. A player wins when all opponents have lost all their
+    /// influence cards.
     pub fn winner(&self) -> Option<PlayerId> {
         match self.phase {
             Phase::Terminal { winner } => Some(winner),
@@ -243,10 +375,16 @@ impl GameState {
         }
     }
 
+    /// Returns `true` if the game has ended (i.e., all but one player
+    /// have lost all their influence).
     pub fn is_terminal(&self) -> bool {
         self.winner().is_some()
     }
 
+    /// Returns the list of legal moves for a given player.
+    ///
+    /// Returns an empty list if it is not the player's turn or if the
+    /// player index is invalid.
     pub fn legal_moves(&self, player: PlayerId) -> Vec<Move> {
         if self.players.get(player).is_none() || Some(player) != self.active_player() {
             return Vec::new();
@@ -281,6 +419,10 @@ impl GameState {
         }
     }
 
+    /// Applies a move to the game state.
+    ///
+    /// Returns `Ok(())` on success, or a [`GameError`] if the move is
+    /// illegal, the player is invalid, or the game is already over.
     pub fn apply_move(&mut self, player: PlayerId, mv: Move) -> Result<(), GameError> {
         if player >= self.players.len() {
             return Err(GameError::InvalidPlayer);
@@ -343,6 +485,8 @@ impl GameState {
         Ok(())
     }
 
+    /// Returns a partial observation of the game from a specific player's
+    /// perspective, hiding opponents' unrevealed cards.
     pub fn observation_for(&self, viewer: PlayerId) -> Result<Observation, GameError> {
         if viewer >= self.players.len() {
             return Err(GameError::InvalidPlayer);
@@ -369,6 +513,12 @@ impl GameState {
         })
     }
 
+    /// Computes a full game state from a partial observation by randomly
+    /// resolving unknown cards.
+    ///
+    /// All cards visible to the observer (including their own hidden cards)
+    /// are placed deterministically; remaining cards are shuffled into
+    /// unknown positions and the deck.
     pub fn determinize(observation: &Observation, seed: u64) -> Result<Self, GameError> {
         if observation.viewer >= observation.players.len() {
             return Err(GameError::InvalidPlayer);
@@ -1363,5 +1513,106 @@ mod tests {
             crate::engine::Bot::choose_move(&mut second_bot, &observation, &mut second_rng);
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn eliminated_player_has_no_legal_moves() {
+        let mut game = rigged_game(vec![vec![Card::Duke, Card::Assassin]], vec![]);
+        // Player 0 loses all influence
+        game.players[0].influence[0].revealed = true;
+        game.players[0].influence[1].revealed = true;
+
+        assert!(game.legal_moves(0).is_empty());
+    }
+
+    #[test]
+    fn coup_on_eliminated_player_fails() {
+        let mut game = rigged_game(
+            vec![
+                vec![Card::Duke, Card::Duke],
+                vec![Card::Contessa, Card::Contessa],
+            ],
+            vec![],
+        );
+        // Eliminate player 1
+        game.players[1].influence[0].revealed = true;
+        game.players[1].influence[1].revealed = true;
+        game.players[0].coins = 7;
+
+        assert_eq!(
+            game.apply_move(0, Move::Coup { target: 1 }),
+            Err(GameError::InvalidMove)
+        );
+    }
+
+    #[test]
+    fn foreign_aid_cannot_be_blocked_by_dead_player() {
+        let mut game = rigged_game(
+            vec![
+                vec![Card::Duke, Card::Duke],
+                vec![Card::Contessa, Card::Contessa],
+                vec![Card::Captain, Card::Captain],
+            ],
+            vec![],
+        );
+        // Eliminate player 2
+        game.players[2].influence[0].revealed = true;
+        game.players[2].influence[1].revealed = true;
+
+        game.apply_move(0, Move::ForeignAid).unwrap();
+        // Player 2 should not be a valid blocker since they're dead
+        assert_eq!(
+            game.apply_move(2, Move::Block { claim: Card::Duke }),
+            Err(GameError::InvalidMove)
+        );
+    }
+
+    #[test]
+    fn steal_from_player_zero_coins_takes_nothing() {
+        let mut game = rigged_game(
+            vec![
+                vec![Card::Captain, Card::Duke],
+                vec![Card::Captain, Card::Duke],
+            ],
+            vec![Card::Assassin, Card::Ambassador, Card::Contessa],
+        );
+        game.players[1].coins = 0;
+        game.players[0].coins = 2;
+
+        game.apply_move(0, Move::Steal { target: 1 }).unwrap();
+        game.apply_move(1, Move::PassChallenge).unwrap();
+        game.apply_move(1, Move::PassBlock).unwrap();
+
+        assert_eq!(game.players[0].coins, 2);
+        assert_eq!(game.players[1].coins, 0);
+    }
+
+    #[test]
+    fn income_cannot_be_claimed() {
+        let mut game = rigged_game(
+            vec![
+                vec![Card::Duke, Card::Duke],
+                vec![Card::Captain, Card::Assassin],
+            ],
+            vec![Card::Ambassador, Card::Contessa, Card::Duke],
+        );
+        game.players[0].coins = 11;
+
+        // Player has >10 coins, only coup is legal
+        let moves = game.legal_moves(0);
+        assert!(moves
+            .iter()
+            .all(|mv| matches!(mv, Move::Coup { .. })));
+    }
+
+    #[test]
+    fn challenge_cannot_target_foreign_aid() {
+        // ForeignAid has no claim, so it cannot be challenged
+        let mut game = GameState::new(3, 1).unwrap();
+        game.apply_move(0, Move::ForeignAid).unwrap();
+        // Player 1 should not be able to challenge ForeignAid
+        // since ForeignAid has no associated card to claim
+        let moves = game.legal_moves(1);
+        assert!(!moves.contains(&Move::Challenge));
     }
 }
