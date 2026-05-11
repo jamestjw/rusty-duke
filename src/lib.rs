@@ -288,7 +288,15 @@ impl GameState {
         if matches!(self.phase, Phase::Terminal { .. }) {
             return Err(GameError::GameOver);
         }
-        if !matches!(mv, Move::ExchangeReturn { .. }) && !self.legal_moves(player).contains(&mv) {
+        let mv = match mv {
+            Move::ExchangeReturn { keep } => {
+                let mut sorted = keep;
+                sorted.sort_by_key(|card| *card as u8);
+                Move::ExchangeReturn { keep: sorted }
+            }
+            mv => mv,
+        };
+        if !self.legal_moves(player).contains(&mv) {
             return Err(GameError::InvalidMove);
         }
 
