@@ -50,7 +50,7 @@ pub enum Card {
 }
 
 /// A card that has been revealed, losing its owner an influence slot.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InfluenceCard {
     /// The card type.
     pub card: Card,
@@ -334,6 +334,7 @@ impl GameState {
     ///
     /// In challenge and block phases, this is the player currently
     /// expected to respond.
+    #[must_use]
     pub fn active_player(&self) -> Option<PlayerId> {
         match &self.phase {
             Phase::AwaitingAction { actor } => Some(*actor),
@@ -368,6 +369,7 @@ impl GameState {
     /// Returns the winner if the game is over, or `None` if it is still
     /// in progress. A player wins when all opponents have lost all their
     /// influence cards.
+    #[must_use]
     pub fn winner(&self) -> Option<PlayerId> {
         match self.phase {
             Phase::Terminal { winner } => Some(winner),
@@ -377,6 +379,7 @@ impl GameState {
 
     /// Returns `true` if the game has ended (i.e., all but one player
     /// have lost all their influence).
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
         self.winner().is_some()
     }
@@ -385,6 +388,7 @@ impl GameState {
     ///
     /// Returns an empty list if it is not the player's turn or if the
     /// player index is invalid.
+    #[must_use]
     pub fn legal_moves(&self, player: PlayerId) -> Vec<Move> {
         if self.players.get(player).is_none() || Some(player) != self.active_player() {
             return Vec::new();
